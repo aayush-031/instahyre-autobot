@@ -1,0 +1,10 @@
+{
+  "name": "instahyre-autobot",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node apply.js"
+  },
+  "dependencies": {
+    "puppeteer": "^22.0.0"
+  }
+}
