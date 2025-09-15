@@ -1,0 +1,25 @@
+name: Daily Instahyre Apply
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # runs daily at 5:00 UTC
+  workflow_dispatch:       # allow manual trigger
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install deps
+        run: npm install
+
+      - name: Run auto apply
+        env:
+          INSTAHYRE_COOKIES: ${{ secrets.INSTAHYRE_COOKIES }}
+        run: npm start
