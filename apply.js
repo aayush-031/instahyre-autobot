@@ -8,51 +8,78 @@ const puppeteer = require("puppeteer");
   const page = await browser.newPage();
   await page.setViewport({ width: 1366, height: 900 });
 
-  // Load domain first so cookie domains resolve, then set cookies
-  await page.goto("https://www.instahyre.com/", { waitUntil: "domcontentloaded" }); // [web:12][web:21]
-  const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES || "[]"); // [web:12]
-  if (cookies.length) await page.setCookie(...cookies); // [web:12]
-
-  // Open opportunities page
+  // Visit domain, set cookies, then go to opportunities
+  await page.goto("https://www.instahyre.com/", { waitUntil: "domcontentloaded" }); // ensure cookie domain loads
+  const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES || "[]");
+  if (cookies.length) await page.setCookie(...cookies);
   await page.goto("https://www.instahyre.com/candidate/opportunities/?matching=true", {
     waitUntil: "networkidle2",
-  }); // [web:12][web:21]
+  });
 
-  // Small helpers using the new xpath/ selector support
-  const waitForXPath = (xp, opts = { timeout: 15000 }) =>
-    page.waitForSelector(`xpath/${xp}`, opts); // [web:6][web:18]
-  const firstByXPath = async (xp) => {
-    const els = await page.$$(`xpath/${xp}`);
-    return els[0] || null;
-  }; // [web:23][web:6]
-  const clickXPath = async (xp) => {
-    await waitForXPath(xp);
-    const el = await firstByXPath(xp);
-    if (el) await el.click({ delay: 50 });
-  }; // [web:6][web:23]
-
-  // 1) Click the first "View" on the recommendations list
-  const viewFirst =
-    "(//a[contains(normalize-space(.),'View')] | //button[contains(normalize-space(.),'View')])[1]";
-  await clickXPath(viewFirst); // [web:6][web:18]
-
-  // 2) Click the first Apply in the job drawer/panel
-  const applyBtn = "//button[contains(normalize-space(.),'Apply') and not(@disabled)]";
-  await clickXPath(applyBtn); // [web:6][web:18]
-
-  // 3) Post-apply flows:
-  //    A) Modal appears with similar job(s) -> click Apply inside modal
-  //    B) Drawer reloads another job inline -> click Apply again
-  try {
-    const modalApply =
-      "(//div[@role='dialog' or contains(@class,'modal')]//button[contains(normalize-space(.),'Apply')])[1]";
-    await clickXPath(modalApply); // [web:6][web:18]
-  } catch {
-    try {
-      await clickXPath(applyBtn); // [web:6][web:18]
-    } catch {}
+  // Small helper: wait for a visible button/link whose text starts with label
+  async function waitForButton(label, rootSelector = "body", timeout = 20000) {
+    await page.waitForFunction(
+      (label, rootSelector) => {
+        const root = document.querySelector(rootSelector) || document.body;
+        const els = [...root.querySelectorAll("a,button")];
+        return Boolean(
+          els.find(
+            (el) =>
+              el.offsetParent !== null &&
+              el.textContent &&
+              el.textContent.trim().toLowerCase().startsWith(label.toLowerCase())
+          )
+        );
+      },
+      { timeout },
+      label,
+      rootSelector
+    );
   }
 
-  await page.waitForTimeout(1500); // optional settle time [web:12]
-  await browser.close(); // [web:12]
+  async function clickButton(label, rootSelector = "body") {
+    return page.evaluate((label, rootSelector) => {
+      const root = document.querySelector(rootSelector) || document.body;
+      const els = [...root.querySelectorAll("a,button")];
+      const el = els.find(
+        (n) =>
+          n.offsetParent !== null &&
+          n.textContent &&
+          n.textContent.trim().toLowerCase().startsWith(label.toLowerCase())
+      );
+      if (el) {
+        el.click();
+        return true;
+      }
+      return false;
+    }, label, rootSelector);
+  }
+
+  // 1) Click the first "View" on the recommendations list
+  await waitForButton("View"); // list rendered
+  await clickButton("View");
+
+  // 2) Click "Apply" in the opened job drawer/page
+  await waitForButton("Apply");
+  await clickButton("Apply");
+
+  // 3) Post-apply cases:
+  //    A) Similar-jobs modal -> click Apply in the dialog
+  //    B) Drawer reloads with another job -> click Apply again inline
+  try {
+    // try modal for a few seconds
+    await waitForButton("Apply", "[role='dialog'], .modal, .ReactModal__Content", 7000);
+    await clickButton("Apply", "[role='dialog'], .modal, .ReactModal__Content");
+  } catch {
+    // fall back to inline second Apply
+    try {
+      await waitForButton("Apply", "body", 7000);
+      await clickButton("Apply");
+    } catch {
+      // no second apply shown; continue
+    }
+  }
+
+  await page.waitForTimeout(1500);
+  await browser.close();
 })();
