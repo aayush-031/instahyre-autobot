@@ -1,96 +1,123 @@
 const puppeteer = require("puppeteer");
+const fs = require("fs");
+
+const log = (msg) => {
+  console.log(msg);
+  fs.appendFileSync("output.log", msg + "\n");
+};
 
 (async () => {
-  console.log("🚀 Launching browser...");
+  log("🚀 Launching browser...");
   const browser = await puppeteer.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
-
   const page = await browser.newPage();
-  page.setDefaultTimeout(30000);
 
-  console.log("🌐 Navigating to Instahyre opportunities page...");
+  log("🌐 Navigating to Instahyre opportunities page...");
   await page.goto("https://www.instahyre.com/candidate/opportunities/?matching=true", {
     waitUntil: "networkidle2"
   });
 
-  // Step 2: Login via cookies
-  try {
-    console.log("🍪 Loading cookies from environment...");
-    const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES || "[]");
+  // --- Step 2: Load cookies ---
+  log("🍪 Loading cookies from environment...");
+  const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES);
+  await page.setCookie(...cookies);
+  log("✅ Cookies set successfully. Reloading page...");
+  await page.reload({ waitUntil: "networkidle2" });
 
-    if (!cookies.length) {
-      console.error("❌ No cookies found in INSTAHYRE_COOKIES env var!");
-      await browser.close();
-      process.exit(1);
-    }
+  log("🔐 Logged in successfully!");
+  await page.waitForTimeout(4000);
 
-    await page.setCookie(...cookies);
-    console.log("✅ Cookies set successfully. Reloading page...");
-    await page.reload({ waitUntil: "networkidle2" });
-    console.log("🔐 Logged in successfully!");
-  } catch (err) {
-    console.error("❌ Failed to load cookies or login:", err);
-    await browser.close();
-    process.exit(1);
-  }
+  // --- Step 3: Scroll to load all jobs ---
+  log("📜 Scrolling through job listings...");
+  await autoScroll(page);
+  await page.waitForTimeout(3000);
 
-  // Step 3: Scan for job buttons
-  console.log("🔍 Scanning for job 'View' buttons...");
-  const jobs = await page.$$("button, a");
-  console.log(`🧩 Found ${jobs.length} clickable elements.`);
+  // --- Step 4: Find possible 'View' or 'Apply' buttons ---
+  log("🔍 Scanning for job 'View' or 'Apply' buttons...");
+  const buttons = await page.$$eval("button, a, div[role='button']", els =>
+    els
+      .filter(el => /view|apply|details/i.test(el.textContent))
+      .map(el => el.innerText.trim())
+  );
 
+  log(`🧩 Found ${buttons.length} clickable elements.`);
   let applied = 0;
-  let viewButtons = [];
 
-  for (const job of jobs) {
-    try {
-      const text = await page.evaluate(el => el.textContent.trim(), job);
-      if (/view/i.test(text)) {
-        viewButtons.push(job);
-      }
-    } catch (e) {}
-  }
+  for (const [i, btnText] of buttons.entries()) {
+    if (applied >= 5) break; // daily safety limit
 
-  console.log(`🎯 Found ${viewButtons.length} 'View' buttons.`);
+    log(`➡️ (${i + 1}) Checking button: "${btnText}"`);
+    if (/view|apply|details/i.test(btnText)) {
+      const [button] = await page.$x(
+        `//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'${btnText.toLowerCase()}')]`
+      );
 
-  for (const [index, job] of viewButtons.entries()) {
-    if (applied >= 5) break;
+      if (button) {
+        try {
+          log(`🖱️ Clicking button: "${btnText}"`);
+          await button.click();
+          await page.waitForTimeout(4000);
 
-    try {
-      const label = await page.evaluate(el => el.textContent.trim(), job);
-      console.log(`\n🟩 (${index + 1}) Clicking on: "${label}"`);
-      await job.click();
-      await page.waitForTimeout(3000);
+          const applyBtn = await page.$x("//button[contains(., 'Apply')]");
+          if (applyBtn.length > 0) {
+            await applyBtn[0].click();
+            log(`✅ Applied to job #${applied + 1}`);
+            applied++;
+            await page.waitForTimeout(2500);
 
-      console.log("⏳ Searching for Apply button...");
-      const applyBtn = await page.$x("//button[contains(., 'Apply')]");
-      if (applyBtn.length > 0) {
-        console.log("✅ Apply button found. Clicking...");
-        await applyBtn[0].click();
-        applied++;
-        console.log(`💼 Applied to ${applied} job(s) so far.`);
-        await page.waitForTimeout(2000);
+            // Handle "Apply to other similar jobs" popup
+            const popupApply = await page.$x("//button[contains(., 'Apply') and not(@disabled)]");
+            if (popupApply.length > 0) {
+              await popupApply[0].click();
+              log("🪄 Applied to similar jobs popup.");
+              await page.waitForTimeout(1500);
+            }
 
-        // Optional: close popup
-        const cancelBtn = await page.$x("//button[contains(., 'Cancel')]");
-        if (cancelBtn.length > 0) {
-          console.log("🧹 Closing cancel popup...");
-          await cancelBtn[0].click();
+            // Close popup if any
+            const cancelBtn = await page.$x("//button[contains(., 'Cancel')]");
+            if (cancelBtn.length > 0) {
+              await cancelBtn[0].click();
+              log("❌ Closed popup.");
+              await page.waitForTimeout(1500);
+            }
+          }
+
+          // Escape from modal safely
+          await page.keyboard.press("Escape");
+          await page.waitForTimeout(2000);
+        } catch (err) {
+          log(`⚠️ Error applying: ${err.message}`);
         }
-      } else {
-        console.log("⚠️ No Apply button found for this job.");
       }
-
-      // Close modal (escape key)
-      await page.keyboard.press("Escape");
-      await page.waitForTimeout(1500);
-    } catch (err) {
-      console.error(`❌ Error applying to job ${index + 1}:`, err.message);
     }
   }
 
-  console.log("\n✅ Finished run. Total jobs applied:", applied);
+  log(`✅ Finished run. Total jobs applied: ${applied}`);
+
+  log("====SUMMARY====");
+  log(`Applied_Count=${applied}`);
+  log("================");
+
   await browser.close();
+
+  // --- Helper function for scrolling ---
+  async function autoScroll(page) {
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 300;
+        const timer = setInterval(() => {
+          const scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 500); // 0.5s per scroll
+      });
+    });
+  }
 })();
