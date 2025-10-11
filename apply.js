@@ -1,4 +1,7 @@
 const puppeteer = require("puppeteer");
+puppeteer.Page.prototype.waitForTimeout = async function (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+};
 const fs = require("fs");
 
 const log = (msg) => {
