@@ -1,71 +1,102 @@
+// Run with: INSTAHYRE_COOKIES='[{"name":"...","value":"..."}]' node instahyre-apply.js
 const puppeteer = require("puppeteer");
 
-// Polyfill for waitForTimeout if Puppeteer < v3
-puppeteer.Page.prototype.waitForTimeout = async function (ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-};
+// Small helper to wait in all Puppeteer versions
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {
-  console.log("🚀 Launching browser...");
+  const INSTAHYRE = "https://www.instahyre.com";
+  const OPPS_URL = `${INSTAHYRE}/candidate/opportunities/?matching=true`;
+
+  // 1) Launch
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
-  });
-  const page = await browser.newPage();
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  }); // [web:18]
+  const page = await browser.newPage(); // [web:5]
 
-  console.log("🌐 Navigating to Instahyre opportunities page...");
-  await page.goto("https://www.instahyre.com/candidate/opportunities/?matching=true", {
-    waitUntil: "networkidle2"
-  });
+  // 2) Load cookies BEFORE going to the target page (or reload after setting)
+  const raw = process.env.INSTAHYRE_COOKIES;
+  if (!raw) throw new Error("INSTAHYRE_COOKIES env var missing"); // [web:6][web:10]
+  let cookies = JSON.parse(raw);
+  // Normalize minimal fields for cross-version compatibility
+  cookies = cookies.map(c => {
+    const copy = { ...c };
+    if (!copy.domain && !copy.url) copy.domain = ".instahyre.com";
+    if (!copy.path) copy.path = "/";
+    return copy;
+  }); // [web:6][web:10]
 
-  console.log("🍪 Loading cookies from environment...");
-  const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES);
-  await page.setCookie(...cookies);
-  console.log("✅ Cookies set successfully. Reloading page...");
-  await page.reload({ waitUntil: "networkidle2" });
+  // Navigate to base domain so page.setCookie has context if domain/url missing
+  await page.goto(INSTAHYRE, { waitUntil: "domcontentloaded" }); // [web:8][web:11]
+  await page.setCookie(...cookies); // Page API works, though deprecated in latest docs [web:3][web:7][web:16]
+  await page.goto(OPPS_URL, { waitUntil: "networkidle2" }); // [web:8][web:11]
 
-  console.log("🔐 Logged in successfully!");
-  await page.waitForTimeout(4000);
+  // 3) Wait for the job list to render
+  await page.waitForSelector("main, body", { timeout: 30000 }); // [web:8][web:11]
+  await sleep(1500);
 
-  // --- Step 3: Wait for job cards to appear ---
-  console.log("🔍 Waiting for job cards...");
-  await page.waitForSelector(".opportunity-card", { timeout: 15000 });
-  console.log("✅ Job cards loaded!");
+  // 4) Auto-scroll to load all cards (incremental scroll with idle pauses)
+  async function autoScroll() {
+    let prev = 0;
+    for (let i = 0; i < 40; i++) {
+      const loaded = await page.evaluate(() => {
+        window.scrollBy(0, window.innerHeight * 0.9);
+        return document.body.scrollHeight;
+      });
+      if (loaded === prev) break;
+      prev = loaded;
+      await sleep(900);
+    }
+  } // [web:11][web:18]
+  await autoScroll();
 
-  // --- Step 4: Find and click “View” buttons ---
-  const viewButtons = await page.$x("//button[contains(., 'View')]");
-  console.log(`🎯 Found ${viewButtons.length} 'View' buttons.`);
+  // 5) Iterate over all "View" buttons using text-based XPath
+  const VIEW_XPATH = "//button[contains(normalize-space(.), 'View')]";
+  const APPLY_XPATH = "//button[contains(normalize-space(.), 'Apply')]";
+  const CLOSE_XPATH =
+    "//button[contains(normalize-space(.), 'Close') or contains(normalize-space(.), 'Cancel') or contains(normalize-space(.), 'Back')]";
 
+  let index = 0;
   let applied = 0;
-  for (const button of viewButtons) {
-    if (applied >= 5) break;
 
-    console.log(`🖱️ Opening job ${applied + 1}...`);
-    await button.click();
-    await page.waitForTimeout(3000);
+  // Helper to re-query all current "View" buttons
+  async function getViewButtons() {
+    return await page.$x(VIEW_XPATH);
+  } // [web:12][web:9]
 
-    const applyBtn = await page.$x("//button[contains(., 'Apply')]");
-    if (applyBtn.length > 0) {
-      console.log("💼 Found Apply button, clicking...");
-      await applyBtn[0].click();
-      await page.waitForTimeout(2000);
+  for (;;) {
+    // Ensure the page has all currently visible cards
+    await autoScroll(); // [web:11][web:18]
+
+    const viewButtons = await getViewButtons(); // [web:12][web:9]
+    if (index >= viewButtons.length) break;
+
+    console.log(`Opening job ${index + 1} / ${viewButtons.length}`);
+    const btn = viewButtons[index];
+    await btn.click(); // [web:18]
+    index++;
+    await sleep(1200);
+
+    // Wait briefly for the side panel/modal and try to click Apply
+    const applyButtons = await page.$x(APPLY_XPATH); // [web:12][web:9]
+    if (applyButtons.length) {
+      await applyButtons[0].click(); // [web:18]
       applied++;
+      await sleep(1200);
+    }
 
-      // Close popup if Cancel or Escape works
-      const cancelBtn = await page.$x("//button[contains(., 'Cancel')]");
-      if (cancelBtn.length > 0) {
-        await cancelBtn[0].click();
-      } else {
-        await page.keyboard.press("Escape");
-      }
-
-      await page.waitForTimeout(1500);
+    // Try closing the panel gracefully, else press Escape
+    const closeButtons = await page.$x(CLOSE_XPATH); // [web:12][web:9]
+    if (closeButtons.length) {
+      await closeButtons[0].click(); // [web:18]
+      await sleep(600);
     } else {
-      console.log("⚠️ No Apply button found for this job.");
-      await page.keyboard.press("Escape");
+      await page.keyboard.press("Escape"); // [web:18]
+      await sleep(600);
     }
   }
 
-  console.log(`✅ Finished run. Total jobs applied: ${applied}`);
-  await browser.close();
+  console.log(`Done. Applied on ${applied} jobs.`);
+  await browser.close(); // [web:18]
 })();
