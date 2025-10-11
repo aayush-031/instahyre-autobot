@@ -1,34 +1,52 @@
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const puppeteer = require("puppeteer");
 const fs = require("fs");
-
-puppeteer.use(StealthPlugin());
 
 (async () => {
   const browser = await puppeteer.launch({
-    headless: true,
+    headless: "new", // use new headless mode
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
       "--disable-dev-shm-usage",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--window-size=1920,1080",
     ],
+    ignoreDefaultArgs: ["--enable-automation"],
   });
 
   const page = await browser.newPage();
   await page.setViewport({ width: 1920, height: 1080 });
 
-  // Set realistic headers
+  // Override navigator.webdriver property
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, "webdriver", {
+      get: () => false,
+    });
+  });
+
+  // Set realistic user agent
+  await page.setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  );
+
+  // Set extra HTTP headers
   await page.setExtraHTTPHeaders({
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    Accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
   });
 
   page.on("console", (msg) => console.log("PAGE:", msg.text()));
 
-  // Navigate to home first to load domain
+  // Navigate to home first
   await page.goto("https://www.instahyre.com/", {
     waitUntil: "networkidle2",
     timeout: 60000,
@@ -50,10 +68,9 @@ puppeteer.use(StealthPlugin());
     timeout: 60000,
   });
 
-  // Wait a bit for any lazy-loaded content
   await page.waitForTimeout(3000);
 
-  // Screenshot for debugging
+  // Screenshot
   await page.screenshot({ path: "debug-after-login.png", fullPage: true });
   console.log("📸 Screenshot: debug-after-login.png");
 
@@ -74,10 +91,10 @@ puppeteer.use(StealthPlugin());
       }));
   });
 
-  console.log("View buttons found:", JSON.stringify(viewButtons, null, 2));
+  console.log("View buttons:", JSON.stringify(viewButtons, null, 2));
 
   if (viewButtons.length === 0) {
-    console.log("❌ No View buttons. Check cookies or bot detection.");
+    console.log("❌ No View buttons found");
     await browser.close();
     return;
   }
@@ -107,7 +124,6 @@ puppeteer.use(StealthPlugin());
   console.log("✅ Clicked View");
   await page.waitForTimeout(4000);
   await page.screenshot({ path: "debug-after-view.png", fullPage: true });
-  console.log("📸 Screenshot: debug-after-view.png");
 
   // Find Apply buttons
   const applyButtons = await page.evaluate(() => {
@@ -122,10 +138,10 @@ puppeteer.use(StealthPlugin());
       }));
   });
 
-  console.log("Apply buttons found:", JSON.stringify(applyButtons, null, 2));
+  console.log("Apply buttons:", JSON.stringify(applyButtons, null, 2));
 
   if (applyButtons.filter((b) => b.visible && !b.disabled).length === 0) {
-    console.log("❌ No Apply buttons found");
+    console.log("❌ No Apply buttons");
     await browser.close();
     return;
   }
@@ -156,9 +172,8 @@ puppeteer.use(StealthPlugin());
   console.log("✅ Clicked Apply");
   await page.waitForTimeout(3000);
   await page.screenshot({ path: "debug-after-apply.png", fullPage: true });
-  console.log("📸 Screenshot: debug-after-apply.png");
 
-  // Check for modal or second Apply
+  // Check for second Apply (modal or inline)
   const secondApply = await page.evaluate(() => {
     const all = [...document.querySelectorAll("a, button")];
     return all
@@ -169,7 +184,7 @@ puppeteer.use(StealthPlugin());
       }));
   });
 
-  console.log("Second Apply buttons:", JSON.stringify(secondApply, null, 2));
+  console.log("Second Apply:", JSON.stringify(secondApply, null, 2));
 
   if (secondApply.filter((b) => b.visible).length > 0) {
     await page.evaluate(() => {
@@ -182,12 +197,12 @@ puppeteer.use(StealthPlugin());
       );
       if (apply) apply.click();
     });
-    console.log("✅ Clicked second Apply (modal or inline)");
+    console.log("✅ Clicked second Apply");
     await page.waitForTimeout(2000);
   }
 
   await page.screenshot({ path: "debug-final.png", fullPage: true });
-  console.log("📸 Final screenshot: debug-final.png");
+  console.log("📸 Final: debug-final.png");
 
   await browser.close();
   console.log("✅ Done");
