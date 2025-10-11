@@ -2,67 +2,57 @@ const puppeteer = require("puppeteer");
 
 (async () => {
   const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
-
   const page = await browser.newPage();
   await page.setViewport({ width: 1366, height: 900 });
 
-  // --- Login with cookies and open the page ---
-  const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES || "[]");
-  if (cookies.length) {
-    await page.setCookie(...cookies);
-  }
-  await page.goto(
-    "https://www.instahyre.com/candidate/opportunities/?matching=true",
-    { waitUntil: "networkidle2" }
-  );
+  // Load domain first so cookie domains resolve, then set cookies
+  await page.goto("https://www.instahyre.com/", { waitUntil: "domcontentloaded" }); // [web:12][web:21]
+  const cookies = JSON.parse(process.env.INSTAHYRE_COOKIES || "[]"); // [web:12]
+  if (cookies.length) await page.setCookie(...cookies); // [web:12]
 
-  // Helper: click first visible element that matches an XPath
-  async function clickFirstVisibleXPath(xpath, timeout = 10000) {
-    await page.waitForXPath(xpath, { timeout });
-    const handles = await page.$x(xpath);
-    for (const h of handles) {
-      const box = await h.boundingBox();
-      if (box) {
-        await h.click({ delay: 50 });
-        return true;
-      }
-    }
-    return false;
-  }
+  // Open opportunities page
+  await page.goto("https://www.instahyre.com/candidate/opportunities/?matching=true", {
+    waitUntil: "networkidle2",
+  }); // [web:12][web:21]
 
-  // 1) Open the first job card
-  const viewXPath = "(//a[contains(., 'View')] | //button[contains(., 'View')])[1]";
-  const opened = await clickFirstVisibleXPath(viewXPath);
-  if (!opened) throw new Error("No 'View' button found");
+  // Small helpers using the new xpath/ selector support
+  const waitForXPath = (xp, opts = { timeout: 15000 }) =>
+    page.waitForSelector(`xpath/${xp}`, opts); // [web:6][web:18]
+  const firstByXPath = async (xp) => {
+    const els = await page.$$(`xpath/${xp}`);
+    return els[0] || null;
+  }; // [web:23][web:6]
+  const clickXPath = async (xp) => {
+    await waitForXPath(xp);
+    const el = await firstByXPath(xp);
+    if (el) await el.click({ delay: 50 });
+  }; // [web:6][web:23]
 
-  // 2) Wait for Apply on the job panel/drawer and click it
-  const applyXPath = "//button[contains(., 'Apply') and not(@disabled)]";
-  await page.waitForXPath(applyXPath, { timeout: 15000 });
-  await clickFirstVisibleXPath(applyXPath);
+  // 1) Click the first "View" on the recommendations list
+  const viewFirst =
+    "(//a[contains(normalize-space(.),'View')] | //button[contains(normalize-space(.),'View')])[1]";
+  await clickXPath(viewFirst); // [web:6][web:18]
 
-  // 3) Handle the two post-apply possibilities:
-  //    A) The “similar jobs” modal -> click Apply inside the dialog
-  //    B) The drawer reloads with another job -> click Apply again
+  // 2) Click the first Apply in the job drawer/panel
+  const applyBtn = "//button[contains(normalize-space(.),'Apply') and not(@disabled)]";
+  await clickXPath(applyBtn); // [web:6][web:18]
+
+  // 3) Post-apply flows:
+  //    A) Modal appears with similar job(s) -> click Apply inside modal
+  //    B) Drawer reloads another job inline -> click Apply again
   try {
-    // Case A: modal apply
-    const modalApplyXPath =
-      "(//div[@role='dialog' or contains(@class,'modal')]//button[contains(., 'Apply')])[1]";
-    await page.waitForXPath(modalApplyXPath, { timeout: 5000 });
-    await clickFirstVisibleXPath(modalApplyXPath);
+    const modalApply =
+      "(//div[@role='dialog' or contains(@class,'modal')]//button[contains(normalize-space(.),'Apply')])[1]";
+    await clickXPath(modalApply); // [web:6][web:18]
   } catch {
-    // Case B: inline next job (Apply shows again)
     try {
-      await page.waitForXPath(applyXPath, { timeout: 7000 });
-      await clickFirstVisibleXPath(applyXPath);
-    } catch {
-      // nothing more to do
-    }
+      await clickXPath(applyBtn); // [web:6][web:18]
+    } catch {}
   }
 
-  // small grace period to let network settle
-  await page.waitForTimeout(2000);
-  await browser.close();
+  await page.waitForTimeout(1500); // optional settle time [web:12]
+  await browser.close(); // [web:12]
 })();
