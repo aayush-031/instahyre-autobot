@@ -1,13 +1,12 @@
 const puppeteer = require("puppeteer-core");
 const fs = require("fs");
 
-// Helper to replace deprecated waitForTimeout
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 (async () => {
   const browser = await puppeteer.launch({
     headless: "new",
-    executablePath: "/usr/bin/chromium-browser", // adjust for your CI environment
+    executablePath: "/usr/bin/chromium-browser",
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -22,19 +21,16 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const page = await browser.newPage();
   await page.setViewport({ width: 1920, height: 1080 });
 
-  // Override navigator.webdriver
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, "webdriver", {
       get: () => false,
     });
   });
 
-  // Set realistic user agent
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   );
 
-  // Set extra headers
   await page.setExtraHTTPHeaders({
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
@@ -49,172 +45,149 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   page.on("console", (msg) => console.log("PAGE:", msg.text()));
 
-  // Navigate to home
   await page.goto("https://www.instahyre.com/", {
     waitUntil: "networkidle2",
     timeout: 60000,
   });
 
-  // Set cookies
   const cookiesRaw = process.env.INSTAHYRE_COOKIES || "[]";
   const cookies = JSON.parse(cookiesRaw);
   if (cookies.length) {
     await page.setCookie(...cookies);
     console.log(`✅ Set ${cookies.length} cookies`);
-  } else {
-    console.log("⚠️ No INSTAHYRE_COOKIES - script may fail without valid session");
   }
 
-  // Navigate to opportunities
   await page.goto("https://www.instahyre.com/candidate/opportunities/?matching=true", {
     waitUntil: "networkidle2",
     timeout: 60000,
   });
 
-  await delay(3000); // replaced waitForTimeout
+  await delay(3000);
 
-  // Screenshot
-  await page.screenshot({ path: "debug-after-login.png", fullPage: true });
-  console.log("📸 Screenshot: debug-after-login.png");
-
-  // Save HTML
-  const html = await page.content();
-  fs.writeFileSync("debug-page.html", html);
-  console.log("📄 HTML saved: debug-page.html");
-
-  // Check for 403 in page content
-  if (html.includes("403") || html.includes("Access Denied") || html.includes("Cloudflare")) {
-    console.log("❌ Cloudflare or 403 block detected. Valid cookies required.");
-    console.log("💡 Export fresh cookies from logged-in browser session");
-    await browser.close();
-    return;
-  }
-
-  // Find View buttons
-  const viewButtons = await page.evaluate(() => {
-    const all = [...document.querySelectorAll("a, button")];
-    return all
-      .filter((el) => el.textContent && el.textContent.toLowerCase().includes("view"))
-      .map((el) => ({
-        tag: el.tagName,
-        text: el.textContent.trim().slice(0, 60),
-        visible: el.offsetParent !== null,
-      }));
-  });
-
-  console.log("View buttons:", JSON.stringify(viewButtons, null, 2));
-
-  if (viewButtons.length === 0) {
-    console.log("❌ No View buttons found - authentication likely failed");
-    await browser.close();
-    return;
-  }
-
-  // Click first visible View
-  const clickedView = await page.evaluate(() => {
-    const all = [...document.querySelectorAll("a, button")];
-    const view = all.find(
+  // Count total View buttons
+  const totalJobs = await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll("button")];
+    return buttons.filter(
       (el) =>
         el.offsetParent !== null &&
         el.textContent &&
         el.textContent.toLowerCase().includes("view")
-    );
-    if (view) {
-      view.click();
-      return true;
+    ).length;
+  });
+
+  console.log(`📊 Found ${totalJobs} jobs to apply to`);
+
+  let applied = 0;
+  let failed = 0;
+
+  // Loop through all jobs
+  for (let i = 0; i < totalJobs; i++) {
+    console.log(`\n🔄 Processing job ${i + 1}/${totalJobs}`);
+
+    try {
+      // Click the first visible View button
+      const clickedView = await page.evaluate(() => {
+        const buttons = [...document.querySelectorAll("button")];
+        const view = buttons.find(
+          (el) =>
+            el.offsetParent !== null &&
+            el.textContent &&
+            el.textContent.toLowerCase().includes("view")
+        );
+        if (view) {
+          view.click();
+          return true;
+        }
+        return false;
+      });
+
+      if (!clickedView) {
+        console.log(`❌ Could not find View button for job ${i + 1}`);
+        failed++;
+        continue;
+      }
+
+      await delay(3000); // wait for job details to load
+
+      // Click Apply button
+      const clickedApply = await page.evaluate(() => {
+        const all = [...document.querySelectorAll("button")];
+        const apply = all.find(
+          (el) =>
+            el.offsetParent !== null &&
+            el.textContent &&
+            el.textContent.toLowerCase().trim() === "apply" &&
+            !el.disabled
+        );
+        if (apply) {
+          apply.click();
+          return true;
+        }
+        return false;
+      });
+
+      if (!clickedApply) {
+        console.log(`⚠️ No Apply button found for job ${i + 1} (may be already applied)`);
+        // Close drawer and continue
+        await page.keyboard.press("Escape");
+        await delay(1500);
+        continue;
+      }
+
+      await delay(2500); // wait for modal or next job to load
+
+      // Check for modal with another Apply button or similar jobs popup
+      const hasModal = await page.evaluate(() => {
+        const all = [...document.querySelectorAll("button")];
+        const modalApply = all.find(
+          (el) =>
+            el.offsetParent !== null &&
+            el.textContent &&
+            el.textContent.toLowerCase().trim() === "apply"
+        );
+        return Boolean(modalApply);
+      });
+
+      if (hasModal) {
+        // Click the modal Apply button
+        await page.evaluate(() => {
+          const all = [...document.querySelectorAll("button")];
+          const apply = all.find(
+            (el) =>
+              el.offsetParent !== null &&
+              el.textContent &&
+              el.textContent.toLowerCase().trim() === "apply"
+          );
+          if (apply) apply.click();
+        });
+        console.log(`✅ Applied to job ${i + 1} + modal job`);
+        applied += 2; // applied to main job + modal suggestion
+        await delay(2000);
+      } else {
+        console.log(`✅ Applied to job ${i + 1}`);
+        applied++;
+      }
+
+      // Close any open drawer/modal to return to job list
+      await page.keyboard.press("Escape");
+      await delay(1500);
+      await page.keyboard.press("Escape"); // double escape for nested modals
+      await delay(1500);
+
+    } catch (error) {
+      console.log(`❌ Error processing job ${i + 1}:`, error.message);
+      failed++;
+      // Try to recover by closing any open modals
+      await page.keyboard.press("Escape");
+      await delay(1000);
     }
-    return false;
-  });
-
-  if (!clickedView) {
-    console.log("❌ Could not click View");
-    await browser.close();
-    return;
   }
 
-  console.log("✅ Clicked View");
-  await delay(4000);
-  await page.screenshot({ path: "debug-after-view.png", fullPage: true });
+  console.log(`\n📈 Summary:`);
+  console.log(`✅ Successfully applied: ${applied} jobs`);
+  console.log(`❌ Failed/Skipped: ${failed} jobs`);
 
-  // Find Apply buttons
-  const applyButtons = await page.evaluate(() => {
-    const all = [...document.querySelectorAll("a, button")];
-    return all
-      .filter((el) => el.textContent && el.textContent.toLowerCase().includes("apply"))
-      .map((el) => ({
-        tag: el.tagName,
-        text: el.textContent.trim().slice(0, 60),
-        visible: el.offsetParent !== null,
-        disabled: el.disabled || el.getAttribute("disabled") !== null,
-      }));
-  });
-
-  console.log("Apply buttons:", JSON.stringify(applyButtons, null, 2));
-
-  if (applyButtons.filter((b) => b.visible && !b.disabled).length === 0) {
-    console.log("❌ No Apply buttons");
-    await browser.close();
-    return;
-  }
-
-  // Click Apply
-  const clickedApply = await page.evaluate(() => {
-    const all = [...document.querySelectorAll("a, button")];
-    const apply = all.find(
-      (el) =>
-        el.offsetParent !== null &&
-        el.textContent &&
-        el.textContent.toLowerCase().includes("apply") &&
-        !el.disabled
-    );
-    if (apply) {
-      apply.click();
-      return true;
-    }
-    return false;
-  });
-
-  if (!clickedApply) {
-    console.log("❌ Could not click Apply");
-    await browser.close();
-    return;
-  }
-
-  console.log("✅ Clicked Apply");
-  await delay(3000);
-  await page.screenshot({ path: "debug-after-apply.png", fullPage: true });
-
-  // Check for second Apply
-  const secondApply = await page.evaluate(() => {
-    const all = [...document.querySelectorAll("a, button")];
-    return all
-      .filter((el) => el.textContent && el.textContent.toLowerCase().includes("apply"))
-      .map((el) => ({
-        text: el.textContent.trim().slice(0, 60),
-        visible: el.offsetParent !== null,
-      }));
-  });
-
-  console.log("Second Apply:", JSON.stringify(secondApply, null, 2));
-
-  if (secondApply.filter((b) => b.visible).length > 0) {
-    await page.evaluate(() => {
-      const all = [...document.querySelectorAll("a, button")];
-      const apply = all.find(
-        (el) =>
-          el.offsetParent !== null &&
-          el.textContent &&
-          el.textContent.toLowerCase().includes("apply")
-      );
-      if (apply) apply.click();
-    });
-    console.log("✅ Clicked second Apply");
-    await delay(2000);
-  }
-
-  await page.screenshot({ path: "debug-final.png", fullPage: true });
-  console.log("📸 Final: debug-final.png");
-
+  await page.screenshot({ path: "final-summary.png", fullPage: true });
   await browser.close();
   console.log("✅ Done");
 })();
