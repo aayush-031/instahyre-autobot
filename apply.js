@@ -2,11 +2,16 @@ const puppeteer = require("puppeteer-core");
 
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
+async function humanDelay(min = 2500, max = 5000) {
+  const ms = min + Math.random() * (max - min);
+  return delay(ms);
+}
+
 async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise((resolve) => {
       let totalHeight = 0;
-      const distance = 500;
+      const distance = 400;
 
       const timer = setInterval(() => {
         window.scrollBy(0, distance);
@@ -16,7 +21,7 @@ async function autoScroll(page) {
           clearInterval(timer);
           resolve();
         }
-      }, 500);
+      }, 400);
     });
   });
 }
@@ -50,94 +55,55 @@ async function autoScroll(page) {
 
   page.on("console", (msg) => console.log("PAGE:", msg.text()));
 
-  // ---------------- LOGIN ----------------
-  const email = process.env.INSTAHYRE_EMAIL;
-  const password = process.env.INSTAHYRE_PASSWORD;
+  // ---------------- LOGIN VIA COOKIES ----------------
+  await page.goto("https://www.instahyre.com", {
+    waitUntil: "networkidle2",
+  });
 
-  let loggedIn = false;
+  const cookiesRaw = process.env.INSTAHYRE_COOKIES || "[]";
+  const cookies = JSON.parse(cookiesRaw);
 
-  try {
-    if (email && password) {
-      console.log("🔐 Trying login via email/password...");
-
-      await page.goto("https://www.instahyre.com/login", {
-        waitUntil: "networkidle2",
-      });
-
-      await delay(2000);
-
-      await page.type("input[type='email']", email, { delay: 80 });
-      await page.type("input[type='password']", password, { delay: 80 });
-
-      await Promise.all([
-        page.click("button[type='submit']"),
-        page.waitForNavigation({ waitUntil: "networkidle2" }),
-      ]);
-
-      if (!page.url().includes("login")) {
-        console.log("✅ Logged in via credentials");
-        loggedIn = true;
-      }
-    }
-  } catch (e) {
-    console.log("⚠️ Login via credentials failed");
+  if (cookies.length) {
+    await page.setCookie(...cookies);
+    console.log(`✅ Set ${cookies.length} cookies`);
   }
 
-  // 🔁 Fallback to cookies
-  if (!loggedIn) {
-    console.log("🍪 Falling back to cookies...");
-
-    const cookiesRaw = process.env.INSTAHYRE_COOKIES || "[]";
-    const cookies = JSON.parse(cookiesRaw);
-
-    await page.goto("https://www.instahyre.com", {
-      waitUntil: "networkidle2",
-    });
-
-    if (cookies.length) {
-      await page.setCookie(...cookies);
-      console.log(`✅ Set ${cookies.length} cookies`);
-    }
-
-    await page.goto(
-      "https://www.instahyre.com/candidate/opportunities/?matching=true",
-      { waitUntil: "networkidle2" }
-    );
-
-    if (page.url().includes("login")) {
-      throw new Error("❌ Both login and cookies failed");
-    }
-
-    console.log("✅ Logged in via cookies");
-  }
-
-  // ---------------- JOBS ----------------
   await page.goto(
     "https://www.instahyre.com/candidate/opportunities/?matching=true",
     { waitUntil: "networkidle2" }
   );
 
+  if (page.url().includes("login")) {
+    throw new Error("❌ Cookies invalid / expired");
+  }
+
+  console.log("✅ Logged in via cookies");
+
+  // ---------------- LOAD JOBS ----------------
   await autoScroll(page);
-  await delay(3000);
+  await humanDelay();
 
   const totalJobs = await page.evaluate(() => {
-    return [...document.querySelectorAll("button")].filter(
-      (el) =>
-        el.offsetParent !== null &&
-        el.textContent &&
-        el.textContent.toLowerCase().includes("view")
-    ).length;
+    return [...document.querySelectorAll("button")]
+      .filter(
+        (el) =>
+          el.offsetParent !== null &&
+          el.textContent &&
+          el.textContent.toLowerCase().includes("view")
+      ).length;
   });
 
   console.log(`📊 Found ${totalJobs} jobs`);
 
   let applied = 0;
+  let skipped = 0;
 
   for (let i = 0; i < totalJobs; i++) {
     console.log(`\n🔄 Processing job ${i + 1}/${totalJobs}`);
 
     try {
-      const clickedView = await page.evaluate((index) => {
+      // Click job card
+      const clicked = await page.evaluate((index) => {
         const views = [...document.querySelectorAll("button")].filter(
           (el) =>
             el.offsetParent !== null &&
@@ -152,24 +118,30 @@ async function autoScroll(page) {
         return false;
       }, i);
 
-      if (!clickedView) continue;
+      if (!clicked) {
+        console.log("❌ Could not open job");
+        continue;
+      }
 
-      await delay(2500);
+      await humanDelay();
 
-      const jobTitle = await page.evaluate(() => {
+      // Get job title
+      const title = await page.evaluate(() => {
         const el = document.querySelector("h1, h2");
         return el ? el.innerText : "Unknown Job";
       });
 
-      console.log(`📌 ${jobTitle}`);
+      console.log(`📌 ${title}`);
 
+      // Click Apply (robust)
       const clickedApply = await page.evaluate(() => {
         const btn = [...document.querySelectorAll("button")].find(
           (el) =>
             el.offsetParent !== null &&
             el.textContent &&
-            el.textContent.toLowerCase().trim() === "apply"
+            el.textContent.toLowerCase().includes("apply")
         );
+
         if (btn) {
           btn.click();
           return true;
@@ -178,28 +150,45 @@ async function autoScroll(page) {
       });
 
       if (!clickedApply) {
-        console.log("⚠️ Already applied");
+        console.log("⚠️ Already applied or no apply button");
+        skipped++;
+
         await page.keyboard.press("Escape");
+        await humanDelay(1500, 2500);
         continue;
       }
 
-      await delay(3000);
+      console.log("👉 Clicked primary apply");
 
-      await page.evaluate(() => {
-        const modalBtn = [...document.querySelectorAll("button")].find(
+      await humanDelay(3000, 5000);
+
+      // Handle modal apply
+      const modalApply = await page.evaluate(() => {
+        const btn = [...document.querySelectorAll("button")].find(
           (el) =>
             el.offsetParent !== null &&
             el.textContent &&
-            el.textContent.toLowerCase().trim() === "apply"
+            el.textContent.toLowerCase().includes("apply")
         );
-        if (modalBtn) modalBtn.click();
+
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
       });
 
-      await delay(3000);
+      if (modalApply) {
+        console.log("👉 Clicked modal apply");
+      }
 
+      await humanDelay(3000, 6000);
+
+      // Close modal
       await page.keyboard.press("Escape");
-      await delay(2000);
+      await humanDelay(1500, 2500);
 
+      // Check if applied (list view)
       const appliedCheck = await page.evaluate(() => {
         return document.body.innerText
           .toLowerCase()
@@ -207,21 +196,25 @@ async function autoScroll(page) {
       });
 
       if (appliedCheck) {
-        console.log(`✅ Applied → ${jobTitle}`);
+        console.log(`✅ Applied → ${title}`);
         applied++;
       } else {
-        console.log(`⚠️ Could not verify → ${jobTitle}`);
+        console.log(`⚠️ Could not verify → ${title}`);
       }
 
-      await delay(3000 + Math.random() * 3000);
+      // Debug screenshot (optional but useful)
+      await page.screenshot({ path: `debug-${i}.png` });
 
+      await humanDelay(4000, 7000);
     } catch (err) {
       console.log("❌ Error:", err.message);
       await page.keyboard.press("Escape");
+      await humanDelay(1000, 2000);
     }
   }
 
   console.log(`\n🎯 Total applied: ${applied}`);
+  console.log(`⚠️ Skipped: ${skipped}`);
 
   await browser.close();
 })();
