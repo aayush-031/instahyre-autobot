@@ -63,9 +63,10 @@ async function autoScroll(page) {
   }
 
   // Go to jobs page
-  await page.goto("https://www.instahyre.com/candidate/opportunities/?matching=true", {
-    waitUntil: "networkidle2",
-  });
+  await page.goto(
+    "https://www.instahyre.com/candidate/opportunities/?matching=true",
+    { waitUntil: "networkidle2" }
+  );
 
   if (page.url().includes("login")) {
     throw new Error("❌ Login failed - cookies invalid");
@@ -73,36 +74,37 @@ async function autoScroll(page) {
 
   console.log("✅ Logged in");
 
-  // 🔥 Scroll to load ALL jobs
+  // Scroll to load jobs
   await autoScroll(page);
   await delay(3000);
 
   const totalJobs = await page.evaluate(() => {
     return [...document.querySelectorAll("button")]
-      .filter(el =>
-        el.offsetParent !== null &&
-        el.textContent &&
-        el.textContent.toLowerCase().includes("view")
+      .filter(
+        (el) =>
+          el.offsetParent !== null &&
+          el.textContent &&
+          el.textContent.toLowerCase().includes("view")
       ).length;
   });
 
   console.log(`📊 Found ${totalJobs} jobs`);
 
   let applied = 0;
-  let failed = 0;
+  let skipped = 0;
 
   for (let i = 0; i < totalJobs; i++) {
     console.log(`\n🔄 Processing job ${i + 1}/${totalJobs}`);
 
     try {
-      // ✅ Click correct job using index
+      // Click correct job
       const clickedView = await page.evaluate((index) => {
-        const views = [...document.querySelectorAll("button")]
-          .filter(el =>
+        const views = [...document.querySelectorAll("button")].filter(
+          (el) =>
             el.offsetParent !== null &&
             el.textContent &&
             el.textContent.toLowerCase().includes("view")
-          );
+        );
 
         if (views[index]) {
           views[index].click();
@@ -112,17 +114,24 @@ async function autoScroll(page) {
       }, i);
 
       if (!clickedView) {
-        console.log("❌ Could not click job");
-        failed++;
+        console.log("❌ Could not open job");
         continue;
       }
 
       await delay(2500);
 
+      // Extract job title
+      const jobTitle = await page.evaluate(() => {
+        const el = document.querySelector("h1, h2");
+        return el ? el.innerText : "Unknown Job";
+      });
+
+      console.log(`📌 Job: ${jobTitle}`);
+
       // Click Apply
       const clickedApply = await page.evaluate(() => {
         const btn = [...document.querySelectorAll("button")].find(
-          el =>
+          (el) =>
             el.offsetParent !== null &&
             el.textContent &&
             el.textContent.toLowerCase().trim() === "apply" &&
@@ -138,17 +147,19 @@ async function autoScroll(page) {
 
       if (!clickedApply) {
         console.log("⚠️ Already applied or no apply button");
+        skipped++;
+
         await page.keyboard.press("Escape");
         await delay(1500);
         continue;
       }
 
-      await delay(2500);
+      await delay(3000);
 
-      // Handle modal apply
+      // Handle modal apply (if exists)
       await page.evaluate(() => {
         const modalBtn = [...document.querySelectorAll("button")].find(
-          el =>
+          (el) =>
             el.offsetParent !== null &&
             el.textContent &&
             el.textContent.toLowerCase().trim() === "apply"
@@ -157,45 +168,43 @@ async function autoScroll(page) {
         if (modalBtn) modalBtn.click();
       });
 
+      await delay(3000);
+
+      // Close modal / go back
+      await page.keyboard.press("Escape");
       await delay(2000);
 
-      // ✅ REAL success check
-      const success = await page.evaluate(() => {
-        return [...document.querySelectorAll("button")]
-          .some(el =>
-            el.textContent &&
-            el.textContent.toLowerCase().includes("applied")
-          );
+      // ✅ Correct success detection (list view)
+      const appliedCheck = await page.evaluate(() => {
+        return document.body.innerText
+          .toLowerCase()
+          .includes("applied today");
       });
 
-      if (success) {
-        console.log(`✅ Actually applied to job ${i + 1}`);
+      if (appliedCheck) {
+        console.log(`✅ Applied successfully → ${jobTitle}`);
         applied++;
       } else {
-        console.log(`❌ Apply failed (likely 400 or blocked)`);
-        failed++;
+        console.log(`⚠️ Could not verify apply → ${jobTitle}`);
       }
 
-      // Close modal/drawer
-      await page.keyboard.press("Escape");
-      await delay(1500);
+      // Extra escape for safety
       await page.keyboard.press("Escape");
 
-      // 🔥 Human-like delay (fix 400 errors)
-      await delay(2000 + Math.random() * 2000);
+      // Human-like delay
+      await delay(3000 + Math.random() * 3000);
 
     } catch (err) {
       console.log("❌ Error:", err.message);
-      failed++;
 
       await page.keyboard.press("Escape");
       await delay(1000);
     }
   }
 
-  console.log(`\n📈 Summary:`);
+  console.log(`\n📈 FINAL SUMMARY`);
   console.log(`✅ Applied: ${applied}`);
-  console.log(`❌ Failed: ${failed}`);
+  console.log(`⚠️ Skipped: ${skipped}`);
 
   await browser.close();
   console.log("✅ Done");
