@@ -2,12 +2,13 @@ name: Daily Instahyre Apply
 
 on:
   schedule:
-    - cron: "0 5 * * *"   # Runs daily at 5:00 UTC (10:30 AM IST)
-  workflow_dispatch:       # Allows manual trigger from GitHub UI
+    - cron: "0 5 * * *"   # 10:30 AM IST
+  workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
@@ -22,13 +23,26 @@ jobs:
 
       - name: 🚀 Run Instahyre Auto Apply
         env:
+          INSTAHYRE_EMAIL: ${{ secrets.INSTAHYRE_EMAIL }}
+          INSTAHYRE_PASSWORD: ${{ secrets.INSTAHYRE_PASSWORD }}
           INSTAHYRE_COOKIES: ${{ secrets.INSTAHYRE_COOKIES }}
         run: |
           echo "Starting Instahyre auto-apply script at $(date)"
           npm start
           echo "✅ Script completed at $(date)"
 
-      - name: 🪵 Upload logs (optional, for debugging)
+      # 🧪 Upload debug screenshots (VERY useful)
+      - name: 📸 Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            *.png
+          if-no-files-found: ignore
+
+      # 🪵 Upload logs (optional)
+      - name: 🪵 Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
